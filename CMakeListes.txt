@@ -1,0 +1,54 @@
+cmake_minimum_required(VERSION 3.21)
+project(GPU830Spoof)
+
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+# تنظیمات بهینه‌سازی
+add_compile_options(-Os -flto -ffunction-sections -fdata-sections -fvisibility=hidden)
+add_link_options(-flto -Wl,--gc-sections -Wl,--exclude-libs,ALL)
+
+if(NOT DEBUG)
+    add_compile_options(-g0 -DNDEBUG)
+    add_link_options(-s)
+endif()
+
+# لیست فایل‌های منبع
+set(SOURCES
+    main.cpp
+    companion.cpp
+)
+
+# کتابخانه اصلی
+add_library(gpu_spoof SHARED ${SOURCES})
+
+# دایرکتوری‌های include
+include_directories(
+    ${CMAKE_SOURCE_DIR}/zygisk
+    ${CMAKE_SOURCE_DIR}/include
+)
+
+# پیدا کردن کتابخانه‌های اندروید
+find_library(log-lib log)
+find_library(android-lib android)
+find_library(dl-lib dl)
+
+# لینک کتابخانه‌ها
+target_link_libraries(gpu_spoof
+    ${log-lib}
+    ${android-lib}
+    ${dl-lib}
+)
+
+# تنظیمات اضافی
+set_target_properties(gpu_spoof PROPERTIES
+    PREFIX ""
+    OUTPUT_NAME "gpu_spoof"
+)
+
+# تست کامپایل
+if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+    message(STATUS "Building in DEBUG mode")
+else()
+    message(STATUS "Building in RELEASE mode")
+endif()
