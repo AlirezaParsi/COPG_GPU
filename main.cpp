@@ -11,151 +11,99 @@
 #define LOG_TAG "GPU830Spoof"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
+#define LOGD(...) __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, __VA_ARGS__)
 
-static const char* TARGET_PACKAGE = "flar2.devcheck";
+// فقط DevCheck - دقت کن!
+static const char* TARGET_PACKAGES[] = {
+    "flar2.devcheck",
+    "com.flar2.devcheck",
+    nullptr  // پایان لیست
+};
 
 // ========== Companion Functions ==========
-void createSpoofFile() {
-    LOGI("Creating GPU spoof file...");
+bool isTargetPackage(const char* package_name) {
+    if (!package_name) return false;
     
-    FILE* fp = fopen("/data/local/tmp/gpu_830_spoof", "w");
-    if (fp) {
-        fprintf(fp, "Adreno 830\n");
-        fprintf(fp, "Vendor: Qualcomm\n");
-        fprintf(fp, "Device ID: 0x430514C1\n");
-        fprintf(fp, "Revision: r5p0\n");
-        fprintf(fp, "Clock: 900 MHz\n");
-        fclose(fp);
-        chmod("/data/local/tmp/gpu_830_spoof", 0444);
-        LOGI("Spoof file created");
-    } else {
-        LOGE("Failed to create spoof file");
+    for (int i = 0; TARGET_PACKAGES[i] != nullptr; i++) {
+        if (strcmp(package_name, TARGET_PACKAGES[i]) == 0) {
+            return true;
+        }
     }
+    return false;
 }
 
-void mountGPUSpoof() {
-    LOGI("Mounting GPU spoof...");
+void setupGPUSpoof() {
+    LOGI("Setting up GPU spoof...");
     
-    // لیست مسیرهای GPU
-    const char* gpu_paths[] = {
+    // فقط فایل‌های sys را mount کنیم (نه libraryها)
+    const char* sys_paths[] = {
         "/sys/class/kgsl/kgsl-3d0/gpu_model",
-        "/sys/class/drm/card0/device/gpu_info",
-        "/sys/kernel/gpu/gpu_model",
-        "/proc/gpuinfo",
+        "/sys/class/drm/card0/device/gpu_info", 
         nullptr
     };
     
-    int mounted = 0;
-    for (int i = 0; gpu_paths[i] != nullptr; i++) {
-        // بررسی وجود مسیر
-        if (access(gpu_paths[i], F_OK) == 0) {
-            LOGI("Found GPU path: %s", gpu_paths[i]);
-            
-            // ابتدا unmount کن (اگر mount شده)
-            umount2(gpu_paths[i], MNT_DETACH);
-            
-            // mount فایل جعلی
-            if (mount("/data/local/tmp/gpu_830_spoof", gpu_paths[i], 
-                     nullptr, MS_BIND | MS_RDONLY, nullptr) == 0) {
-                LOGI("Successfully mounted to: %s", gpu_paths[i]);
-                mounted++;
-            } else {
-                LOGE("Failed to mount: %s", gpu_paths[i]);
-            }
+    // ایجاد فایل جعلی
+    FILE* fp = fopen("/data/local/tmp/gpu_spoof_830", "w");
+    if (fp) {
+        fprintf(fp, "Adreno 830\n");
+        fclose(fp);
+        chmod("/data/local/tmp/gpu_spoof_830", 0444);
+    }
+    
+    // mount فقط فایل‌های sys
+    for (int i = 0; sys_paths[i] != nullptr; i++) {
+        if (access(sys_paths[i], F_OK) == 0) {
+            umount2(sys_paths[i], MNT_DETACH);
+            mount("/data/local/tmp/gpu_spoof_830", sys_paths[i], nullptr, MS_BIND | MS_RDONLY, nullptr);
+            LOGD("Mounted: %s", sys_paths[i]);
         }
     }
     
-    LOGI("Mounted to %d GPU paths", mounted);
+    LOGI("GPU spoof setup done");
 }
 
-void spoofBuildProps() {
-    LOGI("Spoofing build properties...");
+void cleanupGPUSpoof() {
+    LOGD("Cleaning up GPU spoof");
+    unlink("/data/local/tmp/gpu_spoof_830");
     
-    // یافتن resetprop
-    const char* resetprop = nullptr;
+    // unmount مسیرها
     const char* paths[] = {
-        "/data/adb/magisk/resetprop",
-        "/data/adb/ksu/bin/resetprop",
-        "/system/bin/resetprop",
+        "/sys/class/kgsl/kgsl-3d0/gpu_model",
+        "/sys/class/drm/card0/device/gpu_info",
         nullptr
     };
     
     for (int i = 0; paths[i] != nullptr; i++) {
-        if (access(paths[i], X_OK) == 0) {
-            resetprop = paths[i];
-            break;
-        }
-    }
-    
-    if (resetprop) {
-        char cmd[256];
-        
-        // GPU properties
-        snprintf(cmd, sizeof(cmd), "%s ro.hardware.egl adreno", resetprop);
-        system(cmd);
-        
-        snprintf(cmd, sizeof(cmd), "%s ro.board.platform lahaina", resetprop);
-        system(cmd);
-        
-        snprintf(cmd, sizeof(cmd), "%s ro.chipname lahaina", resetprop);
-        system(cmd);
-        
-        snprintf(cmd, sizeof(cmd), "%s ro.vendor.gpu.model \"Adreno 830\"", resetprop);
-        system(cmd);
-        
-        snprintf(cmd, sizeof(cmd), "%s vendor.gpu.model \"Adreno 830\"", resetprop);
-        system(cmd);
-        
-        snprintf(cmd, sizeof(cmd), "%s ro.opengles.version 196608", resetprop);
-        system(cmd);
-        
-        LOGI("Build properties spoofed");
-    } else {
-        LOGE("resetprop not found");
+        umount2(paths[i], MNT_DETACH);
     }
 }
 
-void cleanupSpoof() {
-    LOGI("Cleaning up...");
-    unlink("/data/local/tmp/gpu_830_spoof");
-}
-
-// ========== Companion Entry Point ==========
+// ========== Companion ==========
 void companion(int fd) {
-    LOGI("=== GPU Spoof Companion Started ===");
+    LOGD("Companion started");
     
-    char buffer[64];
-    ssize_t bytes = read(fd, buffer, sizeof(buffer) - 1);
+    char cmd[32];
+    int bytes = read(fd, cmd, sizeof(cmd) - 1);
     
     if (bytes > 0) {
-        buffer[bytes] = '\0';
-        LOGI("Received command: %s", buffer);
+        cmd[bytes] = '\0';
         
         int result = -1;
         
-        if (strcmp(buffer, "setup") == 0) {
-            // ایجاد و mount فایل‌ها
-            createSpoofFile();
-            mountGPUSpoof();
-            spoofBuildProps();
+        if (strcmp(cmd, "setup") == 0) {
+            setupGPUSpoof();
             result = 0;
-        } else if (strcmp(buffer, "cleanup") == 0) {
-            cleanupSpoof();
+        } else if (strcmp(cmd, "cleanup") == 0) {
+            cleanupGPUSpoof();
             result = 0;
-        } else if (strcmp(buffer, "test") == 0) {
-            LOGI("Test command received");
-            result = 0;
+        } else {
+            LOGE("Unknown command: %s", cmd);
         }
         
-        // ارسال نتیجه
         write(fd, &result, sizeof(result));
-        LOGI("Command result: %d", result);
-    } else {
-        LOGE("No command received");
     }
     
     close(fd);
-    LOGI("=== Companion Finished ===");
 }
 
 // ========== Zygisk Module ==========
@@ -164,70 +112,57 @@ public:
     void onLoad(zygisk::Api* api, JNIEnv* env) override {
         this->api = api;
         this->env = env;
-        LOGI("GPU 830 Spoof Module loaded");
+        LOGD("Module loaded");
     }
 
     void preAppSpecialize(zygisk::AppSpecializeArgs* args) override {
         if (!args || !args->nice_name) {
-            api->setOption(zygisk::Option::DLCLOSE_MODULE_LIBRARY);
+            api->setOption(zygisk::DLCLOSE_MODULE_LIBRARY);
             return;
         }
         
         const char* package_name = env->GetStringUTFChars(args->nice_name, nullptr);
-        bool should_spoof = false;
+        bool target_found = false;
         
         if (package_name) {
-            LOGI("Checking package: %s", package_name);
-            
-            // فقط برای DevCheck
-            if (strstr(package_name, "devcheck") != nullptr || 
-                strcmp(package_name, TARGET_PACKAGE) == 0) {
-                should_spoof = true;
-                LOGI("Target package identified!");
-            }
+            LOGD("Package: %s", package_name);
+            target_found = isTargetPackage(package_name);
+            env->ReleaseStringUTFChars(args->nice_name, package_name);
         }
         
-        if (should_spoof) {
-            LOGI("Activating GPU 830 spoof...");
+        if (target_found) {
+            LOGI("🎯 Target found! Setting up GPU 830 spoof");
             
-            // اتصال به companion
+            // فعال کردن companion
             int fd = api->connectCompanion();
             if (fd >= 0) {
-                LOGI("Connected to companion");
+                write(fd, "setup", 6);
                 
-                // ارسال دستور setup
-                const char* cmd = "setup";
-                write(fd, cmd, strlen(cmd) + 1);
-                
-                // دریافت نتیجه
                 int result = -1;
                 read(fd, &result, sizeof(result));
                 close(fd);
                 
                 if (result == 0) {
-                    LOGI("✅ GPU spoof setup successful!");
-                    api->setOption(zygisk::Option::FORCE_DENYLIST_UNMOUNT);
-                } else {
-                    LOGE("❌ GPU spoof setup failed");
-                    api->setOption(zygisk::Option::DLCLOSE_MODULE_LIBRARY);
+                    LOGI("✅ GPU spoof activated for DevCheck");
+                    // ماژول را نگه دار
+                    return;
                 }
-            } else {
-                LOGE("❌ Failed to connect to companion");
-                api->setOption(zygisk::Option::DLCLOSE_MODULE_LIBRARY);
             }
-        } else {
-            LOGI("Not target package, unloading module");
-            api->setOption(zygisk::Option::DLCLOSE_MODULE_LIBRARY);
+            
+            LOGE("❌ Failed to setup GPU spoof");
         }
         
-        if (package_name) {
-            env->ReleaseStringUTFChars(args->nice_name, package_name);
-        }
+        // برای سایر برنامه‌ها، ماژول را unload کن
+        LOGD("Not target app, unloading module");
+        api->setOption(zygisk::DLCLOSE_MODULE_LIBRARY);
+    }
+
+    void postAppSpecialize(const zygisk::AppSpecializeArgs* args) override {
+        // کاری نکن
     }
     
-    void postAppSpecialize(const zygisk::AppSpecializeArgs* args) override {
-        LOGI("postAppSpecialize - keeping module loaded");
-        // ماژول را در حافظه نگه می‌داریم
+    void onUnload() override {
+        LOGD("Module unloading");
     }
 
 private:
@@ -236,6 +171,5 @@ private:
 };
 
 // ========== Registration ==========
-// ثبت همزمان ماژول و companion
 REGISTER_ZYGISK_MODULE(GPU830Module)
 REGISTER_ZYGISK_COMPANION(companion)
