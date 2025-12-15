@@ -2,70 +2,108 @@
 #include <string>
 #include <unistd.h>
 #include <string.h>
+#include <fcntl.h>
+#include <dlfcn.h>
 #include <android/log.h>
 #include "zygisk.hpp"
 
-#define LOG_TAG "GPU830Spoof"
+#define LOG_TAG "GPUSmartSpoof"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
-#define LOGD(...) __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, __VA_ARGS__)
 
 static const char* TARGET_PACKAGE = "flar2.devcheck";
 
 // ============================================
-// JNI Hook برای کلاس‌های DevCheck
+// سیستم fake کردن فایل‌خوانی
 // ============================================
 
-// ذخیره متدهای اصلی
-static jmethodID original_getHardwareInfo = nullptr;
-static jmethodID original_getGpuInfo = nullptr;
-static jobject original_hardware_instance = nullptr;
+typedef ssize_t (*read_func_t)(int, void*, size_t);
+typedef FILE* (*fopen_func_t)(const char*, const char*);
+typedef char* (*fgets_func_t)(char*, int, FILE*);
 
-// تابع جایگزین برای getHardwareInfo
-static jstring hook_getHardwareInfo(JNIEnv* env, jobject thiz) {
-    LOGI("hook_getHardwareInfo called - returning Adreno 830");
+static read_func_t original_read = nullptr;
+static fopen_func_t original_fopen = nullptr;
+static fgets_func_t original_fgets = nullptr;
+
+// hook برای read
+ssize_t hooked_read(int fd, void* buf, size_t count) {
+    // بررسی آیا در حال خواندن فایل GPU هستیم
+    char path[256];
+    snprintf(path, sizeof(path), "/proc/self/fd/%d", fd);
     
-    // برگرداندن رشته جعلی
-    const char* fake_info = 
-        "Adreno 830\n"
-        "Vendor: Qualcomm\n"
-        "Device ID: 0x430514C1\n"
-        "Revision: r5p0\n"
-        "Clock Speed: 900 MHz\n"
-        "Memory: 12 GB\n"
-        "Shaders: 3072\n"
-        "Process: 4 nm";
+    char real_path[256];
+    ssize_t len = readlink(path, real_path, sizeof(real_path)-1);
+    if (len > 0) {
+        real_path[len] = '\0';
+        
+        // اگر فایل GPU است، fake data برگردان
+        if (strstr(real_path, "gpu_model") || strstr(real_path, "gpuinfo") || 
+            strstr(real_path, "gpu_info")) {
+            
+            LOGI("Intercepting read for: %s", real_path);
+            
+            const char* fake_gpu = "Adreno 830\n";
+            size_t fake_len = strlen(fake_gpu);
+            
+            if (count >= fake_len) {
+                memcpy(buf, fake_gpu, fake_len);
+                return fake_len;
+            }
+        }
+    }
     
-    return env->NewStringUTF(fake_info);
+    // در غیر این صورت read اصلی
+    return original_read(fd, buf, count);
 }
 
-// تابع جایگزین برای getGpuInfo
-static jstring hook_getGpuInfo(JNIEnv* env, jobject thiz) {
-    LOGI("hook_getGpuInfo called - returning Adreno 830 info");
+// hook برای fopen
+FILE* hooked_fopen(const char* pathname, const char* mode) {
+    if (pathname && (strstr(pathname, "gpu_model") || strstr(pathname, "gpuinfo"))) {
+        LOGI("Intercepting fopen for: %s", pathname);
+        
+        // ایجاد فایل موقت با اطلاعات جعلی
+        static FILE* fake_file = nullptr;
+        if (!fake_file) {
+            fake_file = tmpfile();
+            if (fake_file) {
+                fputs("Adreno 830\n", fake_file);
+                fputs("Vendor: Qualcomm\n", fake_file);
+                fputs("Device ID: 0x430514C1\n", fake_file);
+                rewind(fake_file);
+            }
+        }
+        return fake_file;
+    }
     
-    const char* fake_gpu = 
-        "GPU: Adreno 830\n"
-        "Vendor: Qualcomm Technologies, Inc.\n"
-        "Renderer: Adreno (TM) 830\n"
-        "OpenGL ES: 3.2\n"
-        "Vulkan: 1.3\n"
-        "Max Texture Size: 16384\n"
-        "Max Cubemap Size: 16384\n"
-        "Max Renderbuffer Size: 16384";
+    return original_fopen(pathname, mode);
+}
+
+// hook برای fgets
+char* hooked_fgets(char* str, int num, FILE* stream) {
+    // اگر فایل GPU fake ماست
+    if (stream && ftell(stream) == 0) {
+        static bool first_call = true;
+        if (first_call) {
+            first_call = false;
+            const char* fake_line = "Adreno 830\n";
+            strncpy(str, fake_line, num);
+            return str;
+        }
+    }
     
-    return env->NewStringUTF(fake_gpu);
+    return original_fgets(str, num, stream);
 }
 
 // ============================================
 // Zygisk Module
 // ============================================
 
-class GPU830Module : public zygisk::ModuleBase {
+class SmartGPUSpoof : public zygisk::ModuleBase {
 public:
     void onLoad(zygisk::Api* api, JNIEnv* env) override {
         this->api = api;
         this->env = env;
-        LOGI("GPU 830 Spoof Module loaded");
+        LOGI("Smart GPU Spoof loaded");
     }
 
     void preAppSpecialize(zygisk::AppSpecializeArgs* args) override {
@@ -75,17 +113,16 @@ public:
         }
         
         const char* package_name = env->GetStringUTFChars(args->nice_name, nullptr);
-        bool is_devcheck = false;
+        bool is_target = false;
         
         if (package_name) {
-            LOGD("Checking package: %s", package_name);
-            is_devcheck = (strcmp(package_name, TARGET_PACKAGE) == 0);
+            is_target = (strcmp(package_name, TARGET_PACKAGE) == 0);
             env->ReleaseStringUTFChars(args->nice_name, package_name);
         }
         
-        if (is_devcheck) {
-            LOGI("🎯 DevCheck detected! Setting up GPU spoof hooks");
-            setupJNIHooks();
+        if (is_target) {
+            LOGI("🎯 Setting up smart GPU spoof for DevCheck");
+            setupHooks();
             api->setOption(zygisk::FORCE_DENYLIST_UNMOUNT);
         } else {
             api->setOption(zygisk::DLCLOSE_MODULE_LIBRARY);
@@ -93,60 +130,25 @@ public:
     }
     
     void postAppSpecialize(const zygisk::AppSpecializeArgs* args) override {
-        // Hook کردن JNI بعد از لود شدن برنامه
-        hookDevCheckClasses();
+        LOGI("Smart GPU spoof active");
     }
 
 private:
     zygisk::Api* api;
     JNIEnv* env;
     
-    void setupJNIHooks() {
-        LOGI("Setting up JNI hooks for GPU spoof");
-        // اینجا می‌توانیم بعداً inline hooking اضافه کنیم
-    }
-    
-    void hookDevCheckClasses() {
-        LOGI("Attempting to hook DevCheck classes...");
+    void setupHooks() {
+        LOGI("Setting up function hooks...");
         
-        // صبر کن تا کلاس‌ها لود شوند
-        sleep(1);
+        // ذخیره توابع اصلی
+        original_read = (read_func_t)dlsym(RTLD_NEXT, "read");
+        original_fopen = (fopen_func_t)dlsym(RTLD_NEXT, "fopen");
+        original_fgets = (fgets_func_t)dlsym(RTLD_NEXT, "fgets");
         
-        JNIEnv* current_env = nullptr;
-        JavaVM* vm = nullptr;
-        
-        if (env->GetJavaVM(&vm) == JNI_OK) {
-            vm->AttachCurrentThread(&current_env, nullptr);
-            
-            if (current_env) {
-                tryHookClasses(current_env);
-                vm->DetachCurrentThread();
-            }
-        }
-    }
-    
-    void tryHookClasses(JNIEnv* jni_env) {
-        // یافتن کلاس‌های DevCheck
-        jclass hardware_class = jni_env->FindClass("flar2/devcheck/modules/hardware/HardwareInfo");
-        if (hardware_class) {
-            LOGI("Found HardwareInfo class");
-            
-            // پیدا کردن متد getHardwareInfo
-            jmethodID getHardwareInfo = jni_env->GetMethodID(hardware_class, "getHardwareInfo", "()Ljava/lang/String;");
-            if (getHardwareInfo) {
-                LOGI("Found getHardwareInfo method - would hook here");
-                // در اینجا باید JNI method hooking انجام شود
-            }
-            
-            jni_env->DeleteLocalRef(hardware_class);
-        }
-        
-        jclass gpu_class = jni_env->FindClass("flar2/devcheck/modules/gpu/GPUInfo");
-        if (gpu_class) {
-            LOGI("Found GPUInfo class");
-            jni_env->DeleteLocalRef(gpu_class);
-        }
+        // در اینجا باید inline hooking انجام شود
+        // برای سادگی فعلاً فقط log می‌کنیم
+        LOGI("Hooks would be installed here");
     }
 };
 
-REGISTER_ZYGISK_MODULE(GPU830Module)
+REGISTER_ZYGISK_MODULE(SmartGPUSpoof)
