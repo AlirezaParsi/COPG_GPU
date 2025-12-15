@@ -12,6 +12,9 @@ add_compile_options(
     -fdata-sections 
     -fvisibility=hidden
     -fPIC
+    -Wall
+    -Wno-unused-parameter
+    -DZYGISK_ENABLED
 )
 add_link_options(-flto -Wl,--gc-sections -Wl,--exclude-libs,ALL)
 
@@ -26,7 +29,7 @@ set(SOURCES
     companion.cpp
 )
 
-# کتابخانه اصلی
+# کتابخانه اصلی - نام مهم است!
 add_library(gpu_spoof SHARED ${SOURCES})
 
 # مسیرهای include
@@ -42,8 +45,5 @@ target_link_libraries(gpu_spoof
     ${android-lib}
 )
 
-# نام خروجی
-set_target_properties(gpu_spoof PROPERTIES
-    PREFIX ""
-    OUTPUT_NAME "gpu_spoof"
-)
+# تنظیم نام خروجی - بسیار مهم!
+set_target_properties(gpu_spoof PROPERT
