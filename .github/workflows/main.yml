@@ -35,33 +35,20 @@ jobs:
         with:
           ref: ${{ github.event.inputs.branch }}
 
-      - name: Set up JDK
-        uses: actions/setup-java@v4
-        with:
-          distribution: 'zulu'
-          java-version: '17'
-
-      - name: Set up Android SDK and NDK
-        run: |
-          echo "ANDROID_HOME=$HOME/android-sdk" >> $GITHUB_ENV
-          mkdir -p $ANDROID_HOME/cmdline-tools
-          wget -q https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip -O cmdline-tools.zip
-          unzip -q cmdline-tools.zip -d $ANDROID_HOME/cmdline-tools
-          if [ -d "$ANDROID_HOME/cmdline-tools/cmdline-tools" ]; then
-            mv $ANDROID_HOME/cmdline-tools/cmdline-tools $ANDROID_HOME/cmdline-tools/latest
-          fi
-          echo "$ANDROID_HOME/cmdline-tools/latest/bin" >> $GITHUB_PATH
-          $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --install "platforms;android-34" "build-tools;34.0.0" --sdk_root=$ANDROID_HOME
-          mkdir -p $ANDROID_HOME/ndk
-          wget -q https://dl.google.com/android/repository/android-ndk-r29-linux.zip -O ndk.zip
-          unzip -q ndk.zip -d $ANDROID_HOME/ndk
-          NDK_DIR=$(find $ANDROID_HOME/ndk -maxdepth 1 -type d -name "android-ndk-r29*" | head -n 1)
-          echo "NDK_PATH=$NDK_DIR" >> $GITHUB_ENV
-
-      - name: Install build tools
+      - name: Set up build environment
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential cmake zip curl
+          sudo apt-get install -y build-essential cmake zip curl wget unzip git
+
+      - name: Download Android NDK
+        run: |
+          mkdir -p ~/android
+          cd ~/android
+          wget -q https://dl.google.com/android/repository/android-ndk-r29-linux.zip
+          unzip -q android-ndk-r29-linux.zip
+          NDK_PATH=$(realpath android-ndk-r29)
+          echo "NDK_PATH=$NDK_PATH" >> $GITHUB_ENV
+          echo "NDK_PATH set to: $NDK_PATH"
 
       - name: Fetch Zygisk Headers
         run: |
@@ -70,42 +57,58 @@ jobs:
 
       - name: Build for arm64-v8a
         run: |
-          mkdir -p build/arm64
-          cd build/arm64
-          cmake ../.. \
+          echo "Building for arm64-v8a..."
+          mkdir -p build_arm64
+          cd build_arm64
+          cmake .. \
             -DCMAKE_TOOLCHAIN_FILE=$NDK_PATH/build/cmake/android.toolchain.cmake \
             -DANDROID_ABI=arm64-v8a \
             -DANDROID_PLATFORM=android-34 \
-            -DCMAKE_BUILD_TYPE=Release
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_MAKE_PROGRAM=make
           make -j$(nproc)
-          cd ../..
+          cd ..
 
       - name: Build for armeabi-v7a
         run: |
-          mkdir -p build/arm
-          cd build/arm
-          cmake ../.. \
+          echo "Building for armeabi-v7a..."
+          mkdir -p build_arm
+          cd build_arm
+          cmake .. \
             -DCMAKE_TOOLCHAIN_FILE=$NDK_PATH/build/cmake/android.toolchain.cmake \
             -DANDROID_ABI=armeabi-v7a \
             -DANDROID_PLATFORM=android-34 \
-            -DCMAKE_BUILD_TYPE=Release
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_MAKE_PROGRAM=make
           make -j$(nproc)
-          cd ../..
+          cd ..
 
       - name: Verify builds
         run: |
-          if [ ! -f "build/arm64/libgpu_spoof.so" ] || [ ! -f "build/arm/libgpu_spoof.so" ]; then
-            echo "Error: Libraries not built!"
-            ls -la build/arm64/ build/arm/
+          echo "Verifying builds..."
+          if [ ! -f "build_arm64/libgpu_spoof.so" ]; then
+            echo "Error: arm64 library not found!"
+            ls -la build_arm64/
             exit 1
           fi
-          echo "Builds verified successfully"
+          if [ ! -f "build_arm/libgpu_spoof.so" ]; then
+            echo "Error: arm library not found!"
+            ls -la build_arm/
+            exit 1
+          fi
+          echo "✓ Builds verified successfully"
+          ls -lh build_arm64/libgpu_spoof.so build_arm/libgpu_spoof.so
 
       - name: Prepare module structure
         run: |
+          echo "Preparing module structure..."
+          
+          # ایجاد پوشه‌ها
           mkdir -p module/zygisk module/META-INF/com/google/android
-          cp build/arm64/libgpu_spoof.so module/zygisk/arm64-v8a.so
-          cp build/arm/libgpu_spoof.so module/zygisk/armeabi-v7a.so
+          
+          # کپی کتابخانه‌ها
+          cp build_arm64/libgpu_spoof.so module/zygisk/arm64-v8a.so
+          cp build_arm/libgpu_spoof.so module/zygisk/armeabi-v7a.so
           chmod 755 module/zygisk/*.so
           
           # ایجاد update-binary
@@ -143,9 +146,8 @@ jobs:
           
           ui_print() { echo "$1"; }
           
-          ui_print "- Customizing installation..."
+          ui_print "- Customizing GPU 830 Spoof module..."
           
-          # تعریف مسیر ماژول
           MODPATH=$1
           
           # تنظیم مجوزها
@@ -153,10 +155,27 @@ jobs:
           set_perm $MODPATH/zygisk/arm64-v8a.so 0 0 0644
           set_perm $MODPATH/zygisk/armeabi-v7a.so 0 0 0644
           
-          ui_print "- Customization complete!"
+          ui_print "- Module ready!"
           EOF
           
           chmod 755 module/customize.sh
+          
+          # ایجاد service.sh
+          cat > module/service.sh << 'EOF'
+          #!/sbin/sh
+          
+          MODDIR=${0%/*}
+          
+          # Wait for boot complete
+          while [ "$(getprop sys.boot_completed)" != "1" ]; do
+            sleep 5
+          done
+          
+          # Clean up temporary files on boot
+          rm -rf /data/local/tmp/gpu_spoof 2>/dev/null
+          EOF
+          
+          chmod 755 module/service.sh
           
           # ایجاد module.prop
           VERSION="${{ github.event.inputs.custom_version || '1.0.0' }}"
@@ -171,28 +190,15 @@ jobs:
           minMagisk=20.4
           EOF
           
-          # ایجاد service.sh
-          cat > module/service.sh << 'EOF'
-          #!/sbin/sh
-          
-          MODDIR=${0%/*}
-          
-          # Wait for boot complete
-          while [ "$(getprop sys.boot_completed)" != "1" ]; do
-            sleep 5
-          done
-          
-          # Clean up temporary files
-          rm -rf /data/local/tmp/gpu_spoof 2>/dev/null
-          EOF
-          
-          chmod 755 module/service.sh
+          echo "Module structure prepared"
 
       - name: Package module into ZIP
         run: |
           VERSION=$(grep "version=" module/module.prop | cut -d'=' -f2)
           VERSION_CODE=$(grep "versionCode=" module/module.prop | cut -d'=' -f2)
           ZIP_NAME="GPU830_Spoof-v${VERSION}-${VERSION_CODE}.zip"
+          
+          echo "Creating ZIP: $ZIP_NAME"
           
           cd module
           zip -r9 "../$ZIP_NAME" .
@@ -202,7 +208,7 @@ jobs:
           echo "VERSION=$VERSION" >> $GITHUB_ENV
           echo "VERSION_CODE=$VERSION_CODE" >> $GITHUB_ENV
           
-          echo "Created: $ZIP_NAME"
+          echo "✓ Created: $ZIP_NAME"
           ls -lh "$ZIP_NAME"
 
       - name: Upload Module ZIP as Artifact
@@ -211,20 +217,22 @@ jobs:
           name: GPU830-Spoof-Module
           path: ${{ env.ZIP_NAME }}
 
-      - name: Upload ZIP to GitHub Release
+      - name: Install GitHub CLI
         if: github.event.inputs.upload_to_release == 'true'
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          TAG="v${{ env.VERSION }}"
-          
-          # نصب gh cli
           type -p curl >/dev/null || sudo apt install curl -y
           curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | sudo dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg \
           && sudo chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg \
           && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null \
           && sudo apt update \
           && sudo apt install gh -y
+
+      - name: Upload ZIP to GitHub Release
+        if: github.event.inputs.upload_to_release == 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="v${{ env.VERSION }}"
           
           # ایجاد یا آپدیت release
           if gh release view "$TAG" >/dev/null 2>&1; then
@@ -237,4 +245,4 @@ jobs:
               --notes "Automated build on $(date -u +'%Y-%m-%d %H:%M:%S UTC')"
           fi
           
-          echo "Uploaded to release: $TAG"
+          echo "✓ Uploaded to release: $TAG"
