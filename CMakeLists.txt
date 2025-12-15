@@ -46,4 +46,14 @@ target_link_libraries(gpu_spoof
 )
 
 # تنظیم نام خروجی - بسیار مهم!
-set_target_properties(gpu_spoof PROPERT
+set_target_properties(gpu_spoof PROPERTIES
+    PREFIX ""
+    OUTPUT_NAME "gpu_spoof"
+    LIBRARY_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
+    ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
+)
+
+# اطلاعات دیباگ
+message(STATUS "Project: ${PROJECT_NAME}")
+message(STATUS "Binary output: ${CMAKE_CURRENT_BINARY_DIR}")
+message(STATUS "Source files: ${SOURCES}")
