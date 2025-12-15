@@ -14,28 +14,32 @@ add_compile_options(
     -fPIC
     -Wall
     -Wno-unused-parameter
+    -Wno-unused-variable
     -DZYGISK_ENABLED
 )
-add_link_options(-flto -Wl,--gc-sections -Wl,--exclude-libs,ALL)
+
+add_link_options(
+    -flto 
+    -Wl,--gc-sections 
+    -Wl,--exclude-libs,ALL
+    -Wl,--no-undefined
+)
 
 if(NOT DEBUG)
     add_compile_options(-g0 -DNDEBUG)
     add_link_options(-s)
 endif()
 
-# فایل‌های منبع
-set(SOURCES
-    main.cpp
-    companion.cpp
-)
+# فایل منبع - فقط یک فایل!
+set(SOURCES main.cpp)
 
-# کتابخانه اصلی - نام مهم است!
+# کتابخانه اصلی
 add_library(gpu_spoof SHARED ${SOURCES})
 
 # مسیرهای include
 include_directories(${CMAKE_CURRENT_SOURCE_DIR}/zygisk)
 
-# پیدا کردن کتابخانه‌های اندروید
+# پیدا کردن کتابخانه‌های مورد نیاز
 find_library(log-lib log)
 find_library(android-lib android)
 
@@ -45,15 +49,14 @@ target_link_libraries(gpu_spoof
     ${android-lib}
 )
 
-# تنظیم نام خروجی - بسیار مهم!
+# تنظیم نام خروجی
 set_target_properties(gpu_spoof PROPERTIES
     PREFIX ""
     OUTPUT_NAME "gpu_spoof"
-    LIBRARY_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
-    ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
+    LIBRARY_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
 )
 
-# اطلاعات دیباگ
-message(STATUS "Project: ${PROJECT_NAME}")
-message(STATUS "Binary output: ${CMAKE_CURRENT_BINARY_DIR}")
-message(STATUS "Source files: ${SOURCES}")
+# پیام اطلاعات
+message(STATUS "Building GPU 830 Spoof Module")
+message(STATUS "Target: ${PROJECT_NAME}")
+message(STATUS "Output: ${CMAKE_CURRENT_BINARY_DIR}/libgpu_spoof.so")
