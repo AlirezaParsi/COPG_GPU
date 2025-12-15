@@ -13,14 +13,13 @@
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
 #define LOGD(...) __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, __VA_ARGS__)
 
-// فقط DevCheck - دقت کن!
+// فقط DevCheck
 static const char* TARGET_PACKAGES[] = {
     "flar2.devcheck",
     "com.flar2.devcheck",
-    nullptr  // پایان لیست
+    nullptr
 };
 
-// ========== Companion Functions ==========
 bool isTargetPackage(const char* package_name) {
     if (!package_name) return false;
     
@@ -32,53 +31,39 @@ bool isTargetPackage(const char* package_name) {
     return false;
 }
 
+// ========== Companion ==========
 void setupGPUSpoof() {
-    LOGI("Setting up GPU spoof...");
-    
-    // فقط فایل‌های sys را mount کنیم (نه libraryها)
-    const char* sys_paths[] = {
-        "/sys/class/kgsl/kgsl-3d0/gpu_model",
-        "/sys/class/drm/card0/device/gpu_info", 
-        nullptr
-    };
+    LOGI("Setting up GPU 830 spoof...");
     
     // ایجاد فایل جعلی
-    FILE* fp = fopen("/data/local/tmp/gpu_spoof_830", "w");
+    FILE* fp = fopen("/data/local/tmp/gpu_830_spoof", "w");
     if (fp) {
         fprintf(fp, "Adreno 830\n");
         fclose(fp);
-        chmod("/data/local/tmp/gpu_spoof_830", 0444);
+        chmod("/data/local/tmp/gpu_830_spoof", 0444);
+        LOGI("Spoof file created");
     }
     
-    // mount فقط فایل‌های sys
-    for (int i = 0; sys_paths[i] != nullptr; i++) {
-        if (access(sys_paths[i], F_OK) == 0) {
-            umount2(sys_paths[i], MNT_DETACH);
-            mount("/data/local/tmp/gpu_spoof_830", sys_paths[i], nullptr, MS_BIND | MS_RDONLY, nullptr);
-            LOGD("Mounted: %s", sys_paths[i]);
+    // فقط این مسیر (کمترین تداخل)
+    const char* target_path = "/sys/class/kgsl/kgsl-3d0/gpu_model";
+    
+    if (access(target_path, F_OK) == 0) {
+        umount2(target_path, MNT_DETACH);
+        if (mount("/data/local/tmp/gpu_830_spoof", target_path, nullptr, MS_BIND | MS_RDONLY, nullptr) == 0) {
+            LOGI("Mounted to %s", target_path);
+        } else {
+            LOGE("Failed to mount");
         }
     }
     
-    LOGI("GPU spoof setup done");
+    LOGI("GPU spoof ready");
 }
 
 void cleanupGPUSpoof() {
-    LOGD("Cleaning up GPU spoof");
-    unlink("/data/local/tmp/gpu_spoof_830");
-    
-    // unmount مسیرها
-    const char* paths[] = {
-        "/sys/class/kgsl/kgsl-3d0/gpu_model",
-        "/sys/class/drm/card0/device/gpu_info",
-        nullptr
-    };
-    
-    for (int i = 0; paths[i] != nullptr; i++) {
-        umount2(paths[i], MNT_DETACH);
-    }
+    unlink("/data/local/tmp/gpu_830_spoof");
+    umount2("/sys/class/kgsl/kgsl-3d0/gpu_model", MNT_DETACH);
 }
 
-// ========== Companion ==========
 void companion(int fd) {
     LOGD("Companion started");
     
@@ -96,8 +81,6 @@ void companion(int fd) {
         } else if (strcmp(cmd, "cleanup") == 0) {
             cleanupGPUSpoof();
             result = 0;
-        } else {
-            LOGE("Unknown command: %s", cmd);
         }
         
         write(fd, &result, sizeof(result));
@@ -112,7 +95,6 @@ public:
     void onLoad(zygisk::Api* api, JNIEnv* env) override {
         this->api = api;
         this->env = env;
-        LOGD("Module loaded");
     }
 
     void preAppSpecialize(zygisk::AppSpecializeArgs* args) override {
@@ -122,18 +104,17 @@ public:
         }
         
         const char* package_name = env->GetStringUTFChars(args->nice_name, nullptr);
-        bool target_found = false;
+        bool is_target = false;
         
         if (package_name) {
-            LOGD("Package: %s", package_name);
-            target_found = isTargetPackage(package_name);
+            LOGD("App: %s", package_name);
+            is_target = isTargetPackage(package_name);
             env->ReleaseStringUTFChars(args->nice_name, package_name);
         }
         
-        if (target_found) {
-            LOGI("🎯 Target found! Setting up GPU 830 spoof");
+        if (is_target) {
+            LOGI("🎯 Activating GPU spoof for DevCheck");
             
-            // فعال کردن companion
             int fd = api->connectCompanion();
             if (fd >= 0) {
                 write(fd, "setup", 6);
@@ -143,26 +124,21 @@ public:
                 close(fd);
                 
                 if (result == 0) {
-                    LOGI("✅ GPU spoof activated for DevCheck");
+                    LOGI("✅ GPU spoof activated");
                     // ماژول را نگه دار
                     return;
                 }
             }
             
-            LOGE("❌ Failed to setup GPU spoof");
+            LOGE("Failed to activate GPU spoof");
         }
         
-        // برای سایر برنامه‌ها، ماژول را unload کن
-        LOGD("Not target app, unloading module");
+        // برای سایر برنامه‌ها ماژول را ببند
         api->setOption(zygisk::DLCLOSE_MODULE_LIBRARY);
     }
-
+    
     void postAppSpecialize(const zygisk::AppSpecializeArgs* args) override {
         // کاری نکن
-    }
-    
-    void onUnload() override {
-        LOGD("Module unloading");
     }
 
 private:
@@ -170,6 +146,5 @@ private:
     JNIEnv* env;
 };
 
-// ========== Registration ==========
 REGISTER_ZYGISK_MODULE(GPU830Module)
 REGISTER_ZYGISK_COMPANION(companion)
